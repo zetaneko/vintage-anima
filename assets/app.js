@@ -37,6 +37,7 @@
     indexId: null,
     indexOpen: null,
     indexQuery: "",
+    castQuery: "",
   };
   TAGS.groups.forEach((group) => {
     state.tags[group.id] = [];
@@ -47,6 +48,11 @@
   let designers = [];
   let characters = [];
   let promptUses = new Map();
+  let shotMax = 1;
+  let castRows = [];
+  let castFraction = 1;
+  let castLockUntil = 0;
+  let castObserver = null;
 
   function el(tag, props, kids) {
     const node = document.createElement(tag);
@@ -189,6 +195,25 @@
       input.setAttribute("aria-expanded", "false");
     }
 
+    function placeMenu() {
+      const rect = input.getBoundingClientRect();
+      const below = window.innerHeight - rect.bottom;
+      const above = rect.top;
+      let top = rect.bottom + 4;
+      let maxHeight = Math.max(120, Math.min(280, below - 12));
+      if (below < 180 && above > below) {
+        maxHeight = Math.max(120, Math.min(280, above - 12));
+        top = Math.max(8, rect.top - 4 - maxHeight);
+      }
+      menu.style.position = "fixed";
+      menu.style.left = rect.left + "px";
+      menu.style.width = rect.width + "px";
+      menu.style.right = "auto";
+      menu.style.top = top + "px";
+      menu.style.maxHeight = maxHeight + "px";
+      menu.style.zIndex = "40";
+    }
+
     function paint() {
       items = config.items(input.value.trim());
       menu.replaceChildren();
@@ -215,6 +240,7 @@
       }
       menu.hidden = false;
       input.setAttribute("aria-expanded", "true");
+      placeMenu();
       const current = menu.querySelector(".active");
       if (current) current.scrollIntoView({ block: "nearest" });
     }
@@ -254,6 +280,12 @@
     });
     document.addEventListener("mousedown", (event) => {
       if (!input.parentElement.contains(event.target)) close();
+    });
+    window.addEventListener("scroll", () => {
+      if (!menu.hidden) placeMenu();
+    }, true);
+    window.addEventListener("resize", () => {
+      if (!menu.hidden) placeMenu();
     });
     return { close };
   }
@@ -324,6 +356,7 @@
       gender: person.gender || "",
       role: person.role || "",
       seriesTitle: person.seriesTitle,
+      shotCount: person.shotCount || 0,
     });
   }
 
@@ -501,7 +534,8 @@
     }
     state.characters.forEach((person, index) => {
       const other = state.seriesId && person.seriesId !== state.seriesId;
-      const chip = el("span", { class: "chip" });
+      const chip = el("span", { class: "chip", title: imageLabel(person.shotCount || 0) + " in the training pack" });
+      chip.append(shotDot(person.shotCount || 0));
       chip.append(person.name + (other ? " · " + person.seriesTitle : ""));
       chip.append(el("button", {
         type: "button",
@@ -722,13 +756,18 @@
   function setView(view) {
     state.view = view;
     document.body.dataset.view = view;
-    $("form-stack").hidden = view === "index";
-    $("dock").hidden = view === "index";
-    $("index-panel").hidden = view !== "index";
-    $("info-dock").hidden = view !== "index";
+    const index = view === "index";
+    const people = view === "characters";
+    $("form-stack").hidden = index || people;
+    $("dock").hidden = index || people;
+    $("index-panel").hidden = !index;
+    $("info-dock").hidden = !index;
+    $("cast-panel").hidden = !people;
+    $("cast-dock").hidden = !people;
     $("view-steps").setAttribute("aria-pressed", view === "steps" ? "true" : "false");
     $("view-quick").setAttribute("aria-pressed", view === "quick" ? "true" : "false");
     $("view-index").setAttribute("aria-pressed", view === "index" ? "true" : "false");
+    $("view-characters").setAttribute("aria-pressed", people ? "true" : "false");
     const params = new URLSearchParams(location.search);
     if (view === "steps") params.delete("view");
     else params.set("view", view);
@@ -737,6 +776,47 @@
     const next = params.toString();
     history.replaceState(null, "", location.pathname + (next ? "?" + next : "") + location.hash);
     if (view === "index") renderIndex();
+    if (people && characters.length) {
+      renderCastBoard();
+      $("cast-panel").scrollIntoView({ block: "start", behavior: "auto" });
+    }
+  }
+
+  function imageLabel(count) {
+    const n = Number(count) || 0;
+    return n === 1 ? "1 image" : n.toLocaleString() + " images";
+  }
+
+  function shotTone(count) {
+    const max = Math.max(1, shotMax);
+    const t = Math.log1p(Math.max(0, Number(count) || 0)) / Math.log1p(max);
+    const blue = [43, 108, 184];
+    const yellow = [226, 176, 58];
+    const red = [194, 59, 46];
+    const mix = t < 0.5 ? t / 0.5 : (t - 0.5) / 0.5;
+    const from = t < 0.5 ? blue : yellow;
+    const to = t < 0.5 ? yellow : red;
+    const rgb = from.map((value, index) => Math.round(value + (to[index] - value) * mix));
+    const lum = (0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]) / 255;
+    return {
+      bg: "rgb(" + rgb.join(",") + ")",
+      ink: lum > 0.64 ? "#231e19" : "#fffaf3",
+    };
+  }
+
+  function shotDot(count) {
+    return el("i", { class: "shot-dot", style: "background:" + shotTone(count).bg, "aria-hidden": "true" });
+  }
+
+  function shotPill(count) {
+    const n = Number(count) || 0;
+    const tone = shotTone(n);
+    return el("span", {
+      class: "shot-count",
+      style: "background:" + tone.bg + ";color:" + tone.ink,
+      title: n ? "Named in " + n.toLocaleString() + " training stills." : "This name was not written on a training still.",
+      text: imageLabel(n),
+    });
   }
 
   function indexRows() {
@@ -801,6 +881,7 @@
       if (person.native) text.append(el("div", { class: "sub", text: person.native }));
       else if (bits.length) text.append(el("div", { class: "sub", text: bits.join(" · ") }));
       item.append(text);
+      item.append(shotPill(person.shotCount || 0));
       people.append(item);
     });
     box.append(people);
@@ -859,6 +940,213 @@
       if (open) entry.append(renderCastFold(series));
       block.append(entry);
     });
+  }
+
+  function countAtFraction(fraction) {
+    const max = Math.max(1, shotMax);
+    const t = Math.min(1, Math.max(0, fraction));
+    return Math.expm1(t * Math.log1p(max));
+  }
+
+  function fractionForCount(count) {
+    const max = Math.max(1, shotMax);
+    return Math.log1p(Math.max(0, Number(count) || 0)) / Math.log1p(max);
+  }
+
+  function indexForFraction(fraction) {
+    if (!castRows.length) return 0;
+    const target = countAtFraction(fraction);
+    for (let index = 0; index < castRows.length; index += 1) {
+      if ((castRows[index].shotCount || 0) <= target) return index;
+    }
+    return castRows.length - 1;
+  }
+
+  function placeThumb(fraction) {
+    const track = $("cast-track");
+    const thumb = $("cast-thumb");
+    if (!track || !thumb) return;
+    const horizontal = track.clientWidth > track.clientHeight;
+    thumb.style.background = shotTone(countAtFraction(fraction)).bg;
+    if (horizontal) {
+      thumb.style.left = (fraction * 100) + "%";
+      thumb.style.top = "50%";
+    } else {
+      thumb.style.left = "50%";
+      thumb.style.top = ((1 - fraction) * 100) + "%";
+    }
+    track.setAttribute("aria-orientation", horizontal ? "horizontal" : "vertical");
+    track.setAttribute("aria-valuenow", String(Math.round(fraction * 1000)));
+  }
+
+  function writeCastReadout(person) {
+    const node = $("cast-readout");
+    if (!node) return;
+    if (!person) {
+      node.textContent = "Drag the color bar to move through the list.";
+      return;
+    }
+    node.textContent = person.name + " · " + person.seriesTitle + " · " + imageLabel(person.shotCount || 0);
+    const track = $("cast-track");
+    if (track) track.setAttribute("aria-valuetext", node.textContent);
+  }
+
+  function focusCast(fraction, scroll) {
+    castFraction = Math.min(1, Math.max(0, fraction));
+    placeThumb(castFraction);
+    const index = indexForFraction(castFraction);
+    writeCastReadout(castRows[index]);
+    if (!scroll) return;
+    const node = $("cast-row-" + index);
+    if (!node) return;
+    castLockUntil = performance.now() + 160;
+    node.scrollIntoView({ block: "start", behavior: "auto" });
+  }
+
+  function fractionFromPointer(event) {
+    const rect = $("cast-track").getBoundingClientRect();
+    if (rect.width > rect.height) {
+      const x = Math.min(Math.max(event.clientX, rect.left), rect.right);
+      return rect.width ? (x - rect.left) / rect.width : 0;
+    }
+    const y = Math.min(Math.max(event.clientY, rect.top), rect.bottom);
+    return rect.height ? 1 - (y - rect.top) / rect.height : 0;
+  }
+
+  function sortedCast(query) {
+    const q = query.trim().toLowerCase();
+    const rows = characters.filter((person) => {
+      if (!q) return true;
+      return [person.name, person.prompt, person.native, person.seriesTitle, person.year]
+        .some((field) => String(field || "").toLowerCase().includes(q));
+    });
+    rows.sort((a, b) => (b.shotCount || 0) - (a.shotCount || 0)
+      || a.name.localeCompare(b.name)
+      || String(a.seriesTitle || "").localeCompare(String(b.seriesTitle || "")));
+    return rows;
+  }
+
+  function watchCastImages() {
+    if (castObserver) castObserver.disconnect();
+    const pending = document.querySelectorAll("#cast-list img[data-src]");
+    if (!("IntersectionObserver" in window)) {
+      pending.forEach((img) => {
+        img.src = img.dataset.src;
+        img.removeAttribute("data-src");
+      });
+      return;
+    }
+    castObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const img = entry.target;
+        if (img.dataset.src) {
+          img.src = img.dataset.src;
+          img.removeAttribute("data-src");
+        }
+        castObserver.unobserve(img);
+      });
+    }, { rootMargin: "600px 0px" });
+    pending.forEach((img) => castObserver.observe(img));
+  }
+
+  function paintCastAdded() {
+    const seen = new Set(state.characters.map((person) => person.seriesId + ":" + person.prompt));
+    document.querySelectorAll("#cast-list .cast-row").forEach((row) => {
+      const button = row.querySelector(".cast-add");
+      if (!button) return;
+      const on = seen.has(row.dataset.key);
+      button.textContent = on ? "Added" : "Add to caption";
+      button.disabled = on;
+    });
+  }
+
+  function renderCastBoard() {
+    const list = $("cast-list");
+    if (!list) return;
+    castRows = sortedCast(state.castQuery || "");
+    list.replaceChildren();
+    if (!castRows.length) {
+      list.append(el("p", { class: "meta", text: "No character matches that." }));
+    }
+    const seen = new Set(state.characters.map((person) => person.seriesId + ":" + person.prompt));
+    castRows.forEach((person, index) => {
+      const n = person.shotCount || 0;
+      const row = el("article", {
+        class: "cast-row",
+        id: "cast-row-" + index,
+        "data-count": String(n),
+        "data-key": person.seriesId + ":" + person.prompt,
+      });
+      row.style.borderLeftColor = shotTone(n).bg;
+      if (person.imageUrl) {
+        const photo = el("img", { alt: "", width: "56", height: "56", "data-src": person.imageUrl });
+        photo.addEventListener("error", () => {
+          photo.replaceWith(el("span", { class: "cast-ph", "aria-hidden": "true", text: (person.name || "?").charAt(0) }));
+        });
+        row.append(photo);
+      } else {
+        row.append(el("span", { class: "cast-ph", "aria-hidden": "true", text: (person.name || "?").charAt(0) }));
+      }
+      const text = el("div", { class: "cast-main" });
+      const who = el("div", { class: "who" });
+      who.append(person.anilistUrl ? extLink(person.anilistUrl, person.name) : el("span", { class: "cast-name", text: person.name }));
+      who.append(shotPill(n));
+      text.append(who);
+      const bits = [
+        person.seriesTitle,
+        person.year,
+        ROLE_LABEL[(person.role || "").toUpperCase()] || person.role,
+      ].filter(Boolean);
+      text.append(el("div", { class: "sub", text: bits.join(" · ") }));
+      if (person.native) text.append(el("div", { class: "sub", text: person.native }));
+      row.append(text);
+      const key = person.seriesId + ":" + person.prompt;
+      row.append(el("button", {
+        type: "button",
+        class: "btn ghost cast-add",
+        text: seen.has(key) ? "Added" : "Add to caption",
+        disabled: seen.has(key) ? "disabled" : null,
+        onclick: () => {
+          addCharacter(person);
+          const note = person.name + " is written as “" + person.prompt + "”. " + imageLabel(n) + " in the training pack used that name.";
+          setWhy(note);
+          render();
+          $("cast-status").textContent = person.name + " added. " + imageLabel(n) + " in the training pack used that name.";
+        },
+      }));
+      list.append(row);
+    });
+    const named = characters.filter((person) => (person.shotCount || 0) > 0).length;
+    $("cast-status").textContent = state.castQuery
+      ? castRows.length.toLocaleString() + " match."
+      : characters.length.toLocaleString() + " characters. " + named.toLocaleString() + " were named on at least one training still.";
+    const high = $("cast-high");
+    if (high) high.textContent = imageLabel(shotMax);
+    watchCastImages();
+    focusCast(castRows.length ? 1 : 0, false);
+  }
+
+  function syncSliderToScroll() {
+    if (state.view !== "characters" || performance.now() < castLockUntil) return;
+    const nodes = document.querySelectorAll("#cast-list .cast-row");
+    if (!nodes.length) return;
+    const line = 140;
+    let low = 0;
+    let high = nodes.length - 1;
+    let index = 0;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (nodes[mid].getBoundingClientRect().top <= line) {
+        index = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    castFraction = fractionForCount(Number(nodes[index].dataset.count) || 0);
+    placeThumb(castFraction);
+    writeCastReadout(castRows[index]);
   }
 
   function infoRow(table, label, value) {
@@ -1022,6 +1310,7 @@
       paintIndexSelection();
       renderInfo();
     }
+    if (state.view === "characters") paintCastAdded();
   }
 
   function toggleList(list, id) {
@@ -1285,9 +1574,57 @@
       setView("index");
       render();
     });
+    $("view-characters").addEventListener("click", () => {
+      setView("characters");
+      render();
+    });
     $("index-filter").addEventListener("input", () => {
       state.indexQuery = $("index-filter").value;
       renderIndex();
+    });
+    $("cast-filter").addEventListener("input", () => {
+      state.castQuery = $("cast-filter").value;
+      if (state.view === "characters") renderCastBoard();
+    });
+    const track = $("cast-track");
+    let dragging = false;
+    track.addEventListener("pointerdown", (event) => {
+      dragging = true;
+      track.setPointerCapture(event.pointerId);
+      focusCast(fractionFromPointer(event), true);
+    });
+    track.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      focusCast(fractionFromPointer(event), true);
+    });
+    track.addEventListener("pointerup", () => { dragging = false; });
+    track.addEventListener("pointercancel", () => { dragging = false; });
+    track.addEventListener("keydown", (event) => {
+      const step = event.shiftKey ? 0.1 : 0.02;
+      if (event.key === "ArrowUp" || event.key === "ArrowRight" || event.key === "PageUp") {
+        event.preventDefault();
+        focusCast(castFraction + step, true);
+      } else if (event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "PageDown") {
+        event.preventDefault();
+        focusCast(castFraction - step, true);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        focusCast(0, true);
+      } else if (event.key === "End") {
+        event.preventDefault();
+        focusCast(1, true);
+      }
+    });
+    let castFrame = 0;
+    window.addEventListener("scroll", () => {
+      if (castFrame) return;
+      castFrame = requestAnimationFrame(() => {
+        castFrame = 0;
+        syncSliderToScroll();
+      });
+    }, { passive: true });
+    window.addEventListener("resize", () => {
+      if (state.view === "characters") placeThumb(castFraction);
     });
     attachCombo($("quick-tag-input"), $("quick-tag-menu"), {
       empty: "No tag matches that.",
@@ -1336,11 +1673,14 @@
       empty: "No character matches that.",
       items: searchCast,
       render(row, person) {
+        const images = imageLabel(person.shotCount || 0);
         renderOption(
           row,
           person.name,
-          [person.role && person.role.toLowerCase(), person.gender, person.seriesTitle, person.year].filter(Boolean).join(" · ")
+          [person.role && person.role.toLowerCase(), person.gender, person.seriesTitle, person.year, images].filter(Boolean).join(" · ")
         );
+        const sub = row.querySelector(".opt-sub");
+        if (sub) sub.prepend(shotDot(person.shotCount || 0));
       },
       pick(person) {
         addCharacter(person);
@@ -1503,6 +1843,7 @@
       });
     });
     designers = [...designerMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+    shotMax = characters.reduce((max, person) => Math.max(max, Number(person.shotCount) || 0), 1);
   }
 
   async function main() {
@@ -1513,7 +1854,7 @@
     const params = new URLSearchParams(location.search);
     wire();
     const requestedView = params.get("view");
-    if (requestedView === "quick" || requestedView === "index") setView(requestedView);
+    if (requestedView === "quick" || requestedView === "index" || requestedView === "characters") setView(requestedView);
     try {
       const response = await fetch("assets/data.json");
       if (!response.ok) throw new Error("Catalog request failed");
@@ -1525,9 +1866,10 @@
       if (seriesParam && byId.has(seriesParam)) {
         state.indexId = seriesParam;
         state.indexOpen = seriesParam;
-        if (state.view !== "index") setView("index");
+        if (state.view !== "index" && state.view !== "characters") setView("index");
       }
       renderIndex();
+      if (state.view === "characters") renderCastBoard();
       const starter = TEMPLATES.find((item) => item.id === params.get("template"));
       if (starter) {
         starter.apply();

@@ -30,6 +30,7 @@
     <button type="button" id="view-steps" aria-pressed="true">Step-by-step</button>
     <button type="button" id="view-quick" aria-pressed="false">Quick Create</button>
     <button type="button" id="view-index" aria-pressed="false">Index</button>
+    <button type="button" id="view-characters" aria-pressed="false">Characters</button>
   </nav>
 
   <div class="wrap layout">
@@ -146,7 +147,7 @@
           <textarea id="sentence" class="sentence" hidden placeholder="A medium close-up of a girl in a sailor uniform, hair blown across her face, classroom window behind her."></textarea>
           <p id="sentence-help" class="meta step-only" hidden>Click a tag below to insert it into the sentence. The tag buttons themselves stay out of the caption.</p>
           <label class="meta step-only" for="tag-filter">Filter tags</label>
-          <input id="tag-filter" class="text-input step-only" type="search" placeholder="Filter hair, clothes, places, light…" autocomplete="off">
+          <input id="tag-filter" class="text-input step-only" type="search" placeholder="Filter hair, expression, clothes, places…" autocomplete="off">
           <div id="tag-board" class="tag-board step-only"></div>
           <div id="quick-desc" class="quick-only">
             <div class="field">
@@ -216,12 +217,25 @@
         <span class="num quiet">A–Z</span>
         <div>
           <h2 id="index-title">Series index</h2>
-          <p class="explain">Every title in the training set. Choose a name and the cast opens underneath it. The panel on the right keeps the series record.</p>
+          <p class="explain">Every title in the training set. Choose a name and the cast opens underneath it. The colored count is how many training stills used that name. The panel on the right keeps the series record.</p>
         </div>
       </div>
       <div class="az" id="az-bar" role="navigation" aria-label="Letters"></div>
       <input id="index-filter" class="text-input" type="search" placeholder="Filter by title, year, studio, or designer" autocomplete="off">
       <div id="index-list"></div>
+    </section>
+
+    <section class="index-panel card" id="cast-panel" hidden aria-labelledby="cast-view-title">
+      <div class="card-head">
+        <span class="num quiet">Cast</span>
+        <div>
+          <h2 id="cast-view-title">Characters by training images</h2>
+          <p class="explain">Every character, from any series, sorted by how many packed stills were captioned with their name. Blue is a name the pack rarely wrote. Red is a name on many stills. A low count means that name was rarely learned, even when the series itself has lots of frames.</p>
+        </div>
+      </div>
+      <input id="cast-filter" class="text-input" type="search" placeholder="Filter by character or series" autocomplete="off">
+      <p id="cast-status" class="meta"></p>
+      <div id="cast-list"></div>
     </section>
 
     <aside class="dock" id="dock" aria-labelledby="caption-title">
@@ -245,6 +259,17 @@
       <h2 id="info-title">Series record</h2>
       <p class="explain">Choose a title. This panel keeps the series record. The cast opens under the name.</p>
       <div id="info-body"></div>
+    </aside>
+
+    <aside class="card cast-rail" id="cast-dock" hidden aria-labelledby="cast-rail-title">
+      <h2 id="cast-rail-title">Image count</h2>
+      <p class="explain">Drag along the color. The list moves to characters with about that many training images.</p>
+      <p class="timeline-end" id="cast-high">Most images</p>
+      <div id="cast-track" class="timeline-track" role="slider" tabindex="0" aria-valuemin="0" aria-valuemax="1000" aria-valuenow="1000" aria-orientation="vertical" aria-label="Training image count">
+        <span id="cast-thumb" class="timeline-thumb"></span>
+      </div>
+      <p class="timeline-end" id="cast-low">No images</p>
+      <p id="cast-readout" class="meta">The top of the list has the names written most often.</p>
     </aside>
   </div>
   <p class="wrap foot" id="foot">Names come from the training catalog. Nothing is uploaded.</p>

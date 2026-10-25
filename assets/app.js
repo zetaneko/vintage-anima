@@ -33,6 +33,10 @@
     quality: [],
     why: "Pick a series, or start from a template. Empty slots are left out of the caption.",
     template: "",
+    view: "steps",
+    indexId: null,
+    indexOpen: null,
+    indexQuery: "",
   };
   TAGS.groups.forEach((group) => {
     state.tags[group.id] = [];
@@ -675,6 +679,334 @@
     });
   }
 
+  const FORMAT_LABEL = {
+    TV: "TV",
+    MOVIE: "Movie",
+    OVA: "OVA",
+    ONA: "ONA",
+    SPECIAL: "Special",
+    TV_SHORT: "TV short",
+    MUSIC: "Music",
+  };
+  const ORIGIN_LABEL = {
+    ORIGINAL: "Original",
+    MANGA: "Manga",
+    LIGHT_NOVEL: "Light novel",
+    VISUAL_NOVEL: "Visual novel",
+    NOVEL: "Novel",
+    VIDEO_GAME: "Video game",
+    GAME: "Game",
+    OTHER: "Other",
+    WEB_NOVEL: "Web novel",
+    DOUJINSHI: "Doujinshi",
+    ANIME: "Anime",
+    COMIC: "Comic",
+    PICTURE_BOOK: "Picture book",
+    MULTIMEDIA_PROJECT: "Multimedia project",
+  };
+  const ROLE_LABEL = { MAIN: "Main", SUPPORTING: "Supporting", BACKGROUND: "Background" };
+
+  function formatLabel(value) {
+    return FORMAT_LABEL[value] || String(value || "").replace(/_/g, " ");
+  }
+
+  function extLink(href, text) {
+    return el("a", { href: href, target: "_blank", rel: "noopener noreferrer", text: text });
+  }
+
+  function letterOf(display) {
+    const ch = String(display || "").trim().charAt(0).toUpperCase();
+    return /[A-Z]/.test(ch) ? ch : "#";
+  }
+
+  function setView(view) {
+    state.view = view;
+    document.body.dataset.view = view;
+    $("form-stack").hidden = view === "index";
+    $("dock").hidden = view === "index";
+    $("index-panel").hidden = view !== "index";
+    $("info-dock").hidden = view !== "index";
+    $("view-steps").setAttribute("aria-pressed", view === "steps" ? "true" : "false");
+    $("view-quick").setAttribute("aria-pressed", view === "quick" ? "true" : "false");
+    $("view-index").setAttribute("aria-pressed", view === "index" ? "true" : "false");
+    const params = new URLSearchParams(location.search);
+    if (view === "steps") params.delete("view");
+    else params.set("view", view);
+    if (view === "index" && state.indexId) params.set("series", state.indexId);
+    else params.delete("series");
+    const next = params.toString();
+    history.replaceState(null, "", location.pathname + (next ? "?" + next : "") + location.hash);
+    if (view === "index") renderIndex();
+  }
+
+  function indexRows() {
+    const query = state.indexQuery.trim().toLowerCase();
+    return catalog
+      .filter((series) => {
+        if (!query) return true;
+        const fields = [
+          series.display,
+          series.prompt,
+          series.native,
+          series.year,
+          series.format,
+          ...(series.aliases || []),
+          ...(series.studios || []),
+          series.designer && series.designer.name,
+        ];
+        return fields.some((field) => String(field || "").toLowerCase().includes(query));
+      })
+      .sort((a, b) => a.display.localeCompare(b.display, undefined, { sensitivity: "base", numeric: true }));
+  }
+
+  function paintIndexSelection() {
+    document.querySelectorAll("#index-list .index-hit").forEach((button) => {
+      button.setAttribute("aria-pressed", button.dataset.id === state.indexId ? "true" : "false");
+    });
+  }
+
+  function selectIndex(id) {
+    state.indexOpen = state.indexOpen === id ? null : id;
+    state.indexId = id;
+    renderIndex();
+    renderInfo();
+    const params = new URLSearchParams(location.search);
+    params.set("view", "index");
+    params.set("series", id);
+    history.replaceState(null, "", location.pathname + "?" + params.toString() + location.hash);
+  }
+
+  function renderCastFold(series) {
+    const cast = series.characters || [];
+    const box = el("div", { class: "cast-fold" });
+    if (!cast.length) {
+      box.append(el("p", { class: "meta", text: "No characters are listed for this title." }));
+      return box;
+    }
+    const people = el("ul", { class: "cast-fold-list" });
+    cast.forEach((person) => {
+      const item = el("li");
+      if (person.imageUrl) {
+        const photo = el("img", { src: person.imageUrl, alt: "", width: "40", height: "40", loading: "lazy" });
+        photo.addEventListener("error", () => {
+          photo.replaceWith(el("span", { class: "cast-ph", "aria-hidden": "true", text: (person.name || "?").charAt(0) }));
+        });
+        item.append(photo);
+      } else {
+        item.append(el("span", { class: "cast-ph", "aria-hidden": "true", text: (person.name || "?").charAt(0) }));
+      }
+      const bits = [ROLE_LABEL[(person.role || "").toUpperCase()] || person.role, person.gender].filter(Boolean);
+      const text = el("div", { class: "cast-id" });
+      text.append(person.anilistUrl ? extLink(person.anilistUrl, person.name) : el("span", { class: "cast-name", text: person.name }));
+      if (person.native) text.append(el("div", { class: "sub", text: person.native }));
+      else if (bits.length) text.append(el("div", { class: "sub", text: bits.join(" · ") }));
+      item.append(text);
+      people.append(item);
+    });
+    box.append(people);
+    return box;
+  }
+
+  function renderIndex() {
+    const rows = indexRows();
+    const present = new Set(rows.map((series) => letterOf(series.display)));
+    const letters = ["#"].concat("ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""));
+    const bar = $("az-bar");
+    bar.replaceChildren();
+    letters.forEach((letter) => {
+      const enabled = present.has(letter);
+      bar.append(el("button", {
+        type: "button",
+        text: letter,
+        disabled: enabled ? null : "disabled",
+        onclick: () => {
+          const node = $("letter-" + (letter === "#" ? "num" : letter));
+          if (node) node.scrollIntoView({ behavior: "smooth", block: "start" });
+        },
+      }));
+    });
+    const list = $("index-list");
+    list.replaceChildren();
+    if (!catalog.length) return;
+    if (!rows.length) {
+      list.append(el("p", { class: "meta", text: "No title matches that." }));
+      return;
+    }
+    let current = "";
+    let block = null;
+    rows.forEach((series) => {
+      const letter = letterOf(series.display);
+      if (letter !== current) {
+        current = letter;
+        block = el("section", { class: "letter-block" });
+        block.append(el("h3", { id: "letter-" + (letter === "#" ? "num" : letter), text: letter }));
+        list.append(block);
+      }
+      const open = state.indexOpen === series.id;
+      const entry = el("div", { class: open ? "index-entry open" : "index-entry" });
+      const count = (series.characters || []).length;
+      entry.append(el("button", {
+        type: "button",
+        class: "index-hit",
+        "data-id": series.id,
+        "aria-expanded": open ? "true" : "false",
+        "aria-pressed": series.id === state.indexId ? "true" : "false",
+        onclick: () => selectIndex(series.id),
+      }, [
+        el("b", { text: series.display }),
+        el("span", { text: [series.year, formatLabel(series.format), count ? count + (count === 1 ? " character" : " characters") : ""].filter(Boolean).join(" · ") }),
+      ]));
+      if (open) entry.append(renderCastFold(series));
+      block.append(entry);
+    });
+  }
+
+  function infoRow(table, label, value) {
+    if (value == null || value === "") return;
+    const tr = el("tr");
+    tr.append(el("th", { text: label, scope: "row" }));
+    const cell = el("td");
+    cell.append(value.nodeType ? value : document.createTextNode(String(value)));
+    tr.append(cell);
+    table.append(tr);
+  }
+
+  function renderInfo() {
+    const intro = $("info-dock").querySelector(".explain");
+    const host = $("info-body");
+    const series = state.indexId ? byId.get(state.indexId) : null;
+    host.replaceChildren();
+    if (!series) {
+      $("info-title").textContent = "Series record";
+      intro.hidden = false;
+      return;
+    }
+    intro.hidden = true;
+    $("info-title").textContent = series.display;
+    if (series.native) host.append(el("p", { class: "meta", text: series.native }));
+    if (series.anilistUrl) {
+      host.append(el("p", { class: "row" }, [extLink(series.anilistUrl, "Open on Anilist")]));
+    }
+    host.append(el("p", { class: "meta" }, [
+      "Caption token ",
+      el("span", { class: "token", text: series.prompt }),
+    ]));
+    const table = el("table", { class: "slots" });
+    infoRow(table, "Year", series.year ? String(series.year) : "");
+    infoRow(table, "Decade", series.decade || "");
+    infoRow(table, "Format", formatLabel(series.format));
+    infoRow(table, "Episodes", series.episodes ? String(series.episodes) : "");
+    infoRow(table, "Length", series.episodeMinutes ? series.episodeMinutes + " min" : "");
+    const aired = [series.startDate, series.endDate].filter(Boolean).join(" – ");
+    infoRow(table, "Aired", aired);
+    infoRow(table, "Source", ORIGIN_LABEL[series.origin] || series.origin || "");
+    const scan = [
+      series.height ? series.height + "p" : "",
+      series.hires ? "hires" : "lowres",
+      series.scan || "",
+    ].filter(Boolean).join(" · ");
+    infoRow(table, "Scan", scan);
+    const studios = series.studioLinks && series.studioLinks.length
+      ? series.studioLinks
+      : (series.studios || []).map((name) => ({ name: name, url: "" }));
+    if (studios.length) {
+      const line = el("span");
+      studios.forEach((studio, index) => {
+        if (index) line.append(", ");
+        line.append(studio.url ? extLink(studio.url, studio.name) : studio.name);
+      });
+      infoRow(table, studios.length > 1 ? "Studios" : "Studio", line);
+    }
+    if (series.designers && series.designers.length) {
+      const line = el("span");
+      series.designers.forEach((person, index) => {
+        if (index) line.append(", ");
+        line.append(person.anilistUrl ? extLink(person.anilistUrl, person.name) : person.name);
+      });
+      infoRow(table, "Designer", line);
+    }
+    const castCount = (series.characters || []).length;
+    infoRow(table, "Characters", castCount ? String(castCount) : "");
+    host.append(table);
+    const aliases = (series.aliases || []).filter((name) => name && name !== series.display);
+    if (aliases.length) {
+      host.append(el("p", { class: "meta", text: "Also known as " + aliases.join(", ") + "." }));
+    }
+    const shared = (promptUses.get(series.prompt) || []).filter((item) => item.id !== series.id);
+    if (shared.length) {
+      host.append(el("p", { class: "warn", text: "The caption token is shared with " + shared.map((item) => item.display).join(", ") + "." }));
+    }
+    if (state.seriesId === series.id) {
+      host.append(el("p", { class: "meta", text: "This series is already in the caption." }));
+    }
+    host.append(el("button", {
+      type: "button",
+      class: "btn primary",
+      text: "Use in the caption",
+      onclick: () => {
+        selectSeries(series.id);
+        setWhy(series.display + " filled the year, scan size, and character designer, unless those slots were set by hand.");
+        setView("steps");
+        render();
+      },
+    }));
+  }
+
+  function selectedBodyTags() {
+    const rows = [];
+    TAGS.counts.forEach((tag) => {
+      if (state.counts.includes(tag.id)) rows.push({ id: tag.id, group: "count", note: tag.note });
+    });
+    TAGS.groups.forEach((group) => {
+      const picked = state.tags[group.id] || [];
+      group.tags.forEach((tag) => {
+        if (picked.includes(tag.id)) rows.push({ id: tag.id, group: group.id, note: tag.note });
+      });
+    });
+    return rows;
+  }
+
+  function searchBodyTags(query) {
+    const rows = [];
+    TAGS.counts.forEach((tag) => rows.push({ id: tag.id, note: tag.note, group: "count", groupTitle: "Count" }));
+    TAGS.groups.forEach((group) => {
+      group.tags.forEach((tag) => rows.push({ id: tag.id, note: tag.note, group: group.id, groupTitle: group.title }));
+    });
+    return rows
+      .map((tag) => ({ tag: tag, score: rank(query, [tag.id, tag.groupTitle]) }))
+      .filter((row) => row.score > 0)
+      .sort((a, b) => b.score - a.score || a.tag.id.localeCompare(b.tag.id))
+      .slice(0, 30)
+      .map((row) => row.tag);
+  }
+
+  function renderQuickTags() {
+    const box = $("quick-desc");
+    box.hidden = state.bodyMode !== "tags";
+    const chips = $("quick-tag-chips");
+    chips.replaceChildren();
+    const picked = selectedBodyTags();
+    if (!picked.length) {
+      chips.append(el("p", { class: "meta", text: "No description tags yet." }));
+    }
+    picked.forEach((tag) => {
+      const chip = el("span", { class: "chip" });
+      chip.append(tag.id);
+      chip.append(el("button", {
+        type: "button",
+        "aria-label": "Remove " + tag.id,
+        text: "×",
+        onclick: () => {
+          if (tag.group === "count") toggleList(state.counts, tag.id);
+          else toggleList(state.tags[tag.group], tag.id);
+          setWhy(tag.note);
+          render();
+        },
+      }));
+      chips.append(chip);
+    });
+  }
+
   function render() {
     const view = resolved();
     renderCaption(view);
@@ -685,6 +1017,11 @@
     renderSource(view);
     renderModes();
     renderTagPressed(view);
+    renderQuickTags();
+    if (state.view === "index") {
+      paintIndexSelection();
+      renderInfo();
+    }
   }
 
   function toggleList(list, id) {
@@ -936,6 +1273,39 @@
     renderTemplates();
     buildTagBoard();
 
+    $("view-steps").addEventListener("click", () => {
+      setView("steps");
+      render();
+    });
+    $("view-quick").addEventListener("click", () => {
+      setView("quick");
+      render();
+    });
+    $("view-index").addEventListener("click", () => {
+      setView("index");
+      render();
+    });
+    $("index-filter").addEventListener("input", () => {
+      state.indexQuery = $("index-filter").value;
+      renderIndex();
+    });
+    attachCombo($("quick-tag-input"), $("quick-tag-menu"), {
+      empty: "No tag matches that.",
+      items: searchBodyTags,
+      render(row, tag) {
+        renderOption(row, tag.id, tag.groupTitle);
+      },
+      pick(tag) {
+        if (tag.group === "count") {
+          if (!state.counts.includes(tag.id)) state.counts.push(tag.id);
+        } else if (!(state.tags[tag.group] || []).includes(tag.id)) {
+          state.tags[tag.group].push(tag.id);
+        }
+        setWhy(tag.note);
+        render();
+      },
+    });
+
     attachCombo($("series-input"), $("series-menu"), {
       empty: "No series matches that.",
       items: searchSeries,
@@ -1140,19 +1510,28 @@
       const details = document.querySelector("#dock details");
       if (details) details.open = false;
     }
+    const params = new URLSearchParams(location.search);
     wire();
+    const requestedView = params.get("view");
+    if (requestedView === "quick" || requestedView === "index") setView(requestedView);
     try {
       const response = await fetch("assets/data.json");
       if (!response.ok) throw new Error("Catalog request failed");
       const data = await response.json();
       indexCatalog(data);
       const castCount = characters.length;
-      $("foot").textContent = catalog.length + " series and " + castCount + " characters from the training catalog. The page runs entirely in the browser. Nothing is uploaded.";
-      const requested = new URLSearchParams(location.search).get("template");
-      const starter = TEMPLATES.find((item) => item.id === requested);
+      $("foot").textContent = catalog.length + " series and " + castCount + " characters from the training catalog. Nothing is uploaded.";
+      const seriesParam = params.get("series");
+      if (seriesParam && byId.has(seriesParam)) {
+        state.indexId = seriesParam;
+        state.indexOpen = seriesParam;
+        if (state.view !== "index") setView("index");
+      }
+      renderIndex();
+      const starter = TEMPLATES.find((item) => item.id === params.get("template"));
       if (starter) {
         starter.apply();
-        if (requested !== "empty") state.template = requested;
+        if (starter.id !== "empty") state.template = starter.id;
       }
       render();
     } catch (error) {

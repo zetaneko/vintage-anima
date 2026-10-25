@@ -1861,7 +1861,16 @@
       const data = await response.json();
       indexCatalog(data);
       const castCount = characters.length;
-      $("foot").textContent = catalog.length + " series and " + castCount + " characters from the training catalog. Nothing is uploaded.";
+      const foot = $("foot");
+      foot.replaceChildren(
+        document.createTextNode(
+          catalog.length + " series and " + castCount + " characters from the training catalog. Nothing is uploaded. The same builder is a "
+        )
+      );
+      const nodeLink = document.createElement("a");
+      nodeLink.href = "https://github.com/zetaneko/vintageanime-comfyui";
+      nodeLink.textContent = "ComfyUI node";
+      foot.append(nodeLink, document.createTextNode("."));
       const seriesParam = params.get("series");
       if (seriesParam && byId.has(seriesParam)) {
         state.indexId = seriesParam;

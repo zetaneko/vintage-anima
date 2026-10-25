@@ -10,6 +10,10 @@ The page is client-side. Series, cast, and designers are loaded from `assets/dat
 
 Site: https://zetaneko.github.io/vintage-anima/
 
+ComfyUI node: https://github.com/zetaneko/vintageanime-comfyui
+
+The node builds this same caption inside ComfyUI. It lists series, characters, the character designer, year, scan, and quality. Characters can be limited to the selected series. The description is a large box in the middle. A default negative uses the quality tags from the other scan.
+
 To open it locally, run a static server in this folder:
 
 ```bash

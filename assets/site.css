@@ -97,6 +97,11 @@ h1 {
   color: var(--muted);
   font-size: 15px;
 }
+.node-link {
+  margin-top: 6px;
+  font-size: 13px;
+}
+.node-link a { color: var(--teal); }
 
 .layout {
   display: grid;

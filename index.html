@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VintageAnima</title>
+  <meta name="description" content="VintageAnima prompt studio. Build a caption in the order used to train late-1970s and 1980s anime stills.">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+  <a class="skip" href="#series-input">Skip to the series search</a>
+  <header class="wrap top">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 54 54" aria-hidden="true">
+        <rect x="1" y="1" width="52" height="52" rx="14" fill="#261f1b"/>
+        <circle cx="27" cy="27" r="14" fill="#c24b2e"/>
+        <circle cx="27" cy="27" r="6" fill="#f6f0e6"/>
+        <path d="M10 14h8M36 40h8" stroke="#f6f0e6" stroke-width="2"/>
+      </svg>
+      <div>
+        <p class="eyebrow">Prompt studio</p>
+        <h1>VintageAnima</h1>
+      </div>
+    </div>
+    <p class="lede">Write a VintageAnima caption the way the training stills were written. Pick a series and the year, scan size, and character designer come with it. Change any of those, or leave them out.</p>
+  </header>
+
+  <div class="wrap layout">
+    <main class="stack">
+      <section class="card" aria-labelledby="start-title">
+        <div class="card-head">
+          <span class="num quiet">Start</span>
+          <div>
+            <h2 id="start-title">A few starting points</h2>
+            <p class="explain">Each one fills the form. It does not lock anything. Clear a slot afterward if you do not want it.</p>
+          </div>
+        </div>
+        <div class="templates" id="template-row"></div>
+      </section>
+
+      <section class="card start" id="sec-series" aria-labelledby="series-title">
+        <div class="sec-head">
+          <span class="num">5</span>
+          <div>
+            <h2 id="series-title">Series</h2>
+            <p class="explain">Choosing a series fills the year, the decade, the scan size, and the character designer. The series name itself is written <strong>after</strong> the character names. Studio is shown for context and is never added to the caption.</p>
+          </div>
+        </div>
+        <div class="field">
+          <input id="series-input" type="search" role="combobox" aria-expanded="false" aria-controls="series-menu" aria-autocomplete="list" placeholder="Search a title, year, studio, or designer" autocomplete="off">
+          <ul id="series-menu" class="combo-menu" role="listbox" hidden></ul>
+        </div>
+        <div id="series-card"></div>
+      </section>
+
+      <section class="card" id="sec-prefix" aria-labelledby="prefix-title">
+        <div class="sec-head">
+          <span class="num">1</span>
+          <div>
+            <h2 id="prefix-title">Prefix</h2>
+            <p class="explain">Every training caption started with <strong>anime screenshot</strong>. That token means a frame from a film or a television print, not a modern illustration. Leave it on unless you are testing what happens without it.</p>
+          </div>
+        </div>
+        <label class="inline-check">
+          <input id="prefix-toggle" type="checkbox" checked>
+          Include anime screenshot
+        </label>
+      </section>
+
+      <section class="card" id="sec-year" aria-labelledby="year-title">
+        <div class="sec-head">
+          <span class="num">2</span>
+          <div>
+            <h2 id="year-title">Year and decade</h2>
+            <p class="explain">These sit immediately after the prefix. The decade is the ten-year label, so 1985 also writes <strong>1980s</strong>. The training window is 1977–1989. Omit the year and the decade goes with it.</p>
+          </div>
+        </div>
+        <div class="year-grid">
+          <input id="year-input" class="text-input" inputmode="numeric" maxlength="4" aria-label="Year" placeholder="Year">
+          <div>
+            <span id="year-badge" class="badge">From series</span>
+            <div class="controls row">
+              <button type="button" class="btn" id="year-reset">Use the series year</button>
+              <button type="button" class="btn ghost" id="year-omit">No year</button>
+              <label class="inline-check">
+                <input id="decade-toggle" type="checkbox" checked>
+                Include the decade
+              </label>
+            </div>
+          </div>
+        </div>
+        <p id="year-help" class="meta"></p>
+      </section>
+
+      <section class="card" id="sec-cast" aria-labelledby="cast-title">
+        <div class="sec-head">
+          <span class="num">4</span>
+          <div>
+            <h2 id="cast-title">Characters</h2>
+            <p class="explain">Names are written <strong>before</strong> the series, in lowercase. Training only named a person when that face was identified, so an empty cast is a normal still. Count tags such as 1girl are description tags, not names. They are suggested, never added for you.</p>
+          </div>
+        </div>
+        <div class="field">
+          <input id="cast-input" type="search" role="combobox" aria-expanded="false" aria-controls="cast-menu" aria-autocomplete="list" placeholder="Search a character" autocomplete="off">
+          <ul id="cast-menu" class="combo-menu" role="listbox" hidden></ul>
+        </div>
+        <div class="controls row">
+          <label class="inline-check">
+            <input id="cast-all" type="checkbox">
+            Search every series
+          </label>
+          <button type="button" class="btn ghost" id="cast-clear">No character</button>
+        </div>
+        <div id="cast-chips" class="row"></div>
+        <p id="cast-suggest" class="meta"></p>
+      </section>
+
+      <section class="card" id="sec-body" aria-labelledby="body-title">
+        <div class="sec-head">
+          <span class="num">6</span>
+          <div>
+            <h2 id="body-title">Description</h2>
+            <p class="explain">The open middle of the caption. Training used <strong>either</strong> a tag list <strong>or</strong> one sentence for this slot, not both. Tags are written in a fixed reading order, not the order you click them.</p>
+          </div>
+        </div>
+        <div class="mode-switch" role="group" aria-label="Description style">
+          <button type="button" id="mode-tags" aria-pressed="true">Tag list</button>
+          <button type="button" id="mode-sentence" aria-pressed="false">One sentence</button>
+        </div>
+        <textarea id="sentence" class="sentence" hidden placeholder="A medium close-up of a girl in a sailor uniform, hair blown across her face, classroom window behind her."></textarea>
+        <p id="sentence-help" class="meta" hidden>Click a tag below to insert it into the sentence. The tag buttons themselves stay out of the caption.</p>
+        <label class="meta" for="tag-filter">Filter tags</label>
+        <input id="tag-filter" class="text-input" type="search" placeholder="Filter hair, clothes, places, light…" autocomplete="off" style="margin-top:4px">
+        <div id="tag-board" class="tag-board"></div>
+        <label class="meta" for="extra" style="display:block;margin-top:12px">Extra words, still inside the description</label>
+        <input id="extra" class="text-input" type="text" placeholder="comma-separated tags or a short phrase" autocomplete="off">
+      </section>
+
+      <section class="card" id="sec-source" aria-labelledby="source-title">
+        <div class="sec-head">
+          <span class="num">7</span>
+          <div>
+            <h2 id="source-title">Scan size</h2>
+            <p class="explain"><strong>hires</strong> means the source was 720p or taller. <strong>lowres</strong> means it was not. The token is written after the description and before the designer. A 480p television frame should stay lowres so the model does not treat tape softness as the era itself.</p>
+          </div>
+        </div>
+        <div class="row" role="group" aria-label="Scan size">
+          <button type="button" class="source-btn" id="source-hi">hires</button>
+          <button type="button" class="source-btn" id="source-lo">lowres</button>
+          <button type="button" class="source-btn" id="source-omit">Omit</button>
+          <button type="button" class="btn" id="source-reset">Use the series scan</button>
+        </div>
+        <p id="source-help" class="meta"></p>
+      </section>
+
+      <section class="card" id="sec-designer" aria-labelledby="designer-title">
+        <div class="sec-head">
+          <span class="num">8</span>
+          <div>
+            <h2 id="designer-title">Character designer</h2>
+            <p class="explain">Written after the scan size. The automatic choice is the animation character designer, not the original novelist or manga artist, when the catalog made that distinction. Vampire Hunter D writes <strong>noriyasu yamauchi</strong>, not Yoshitaka Amano. Pick someone else, or leave the slot out.</p>
+          </div>
+        </div>
+        <div class="field">
+          <input id="designer-input" type="search" role="combobox" aria-expanded="false" aria-controls="designer-menu" aria-autocomplete="list" placeholder="Search every designer" autocomplete="off">
+          <ul id="designer-menu" class="combo-menu" role="listbox" hidden></ul>
+        </div>
+        <div id="designer-picks" class="designer-picks"></div>
+        <div id="designer-card"></div>
+      </section>
+
+      <section class="card" id="sec-quality" aria-labelledby="quality-title">
+        <div class="sec-head">
+          <span class="num">9</span>
+          <div>
+            <h2 id="quality-title">Quality</h2>
+            <p class="explain">These come last. They separate a clean cel from tape noise, so the decade does not have to mean VHS. Hires stills were tagged <strong>hq cel animation</strong> by default. Broadcast faults such as vhs and dot crawl were kept for lowres captions and stripped from hires ones.</p>
+          </div>
+        </div>
+        <div id="quality-board" class="quality-grid"></div>
+      </section>
+    </main>
+
+    <aside class="dock" id="dock" aria-labelledby="caption-title">
+      <h2 id="caption-title">Caption</h2>
+      <p class="explain">The text box is the caption. Colored words are the slots. Click one to jump to its control.</p>
+      <div id="caption-chips" class="chips"></div>
+      <textarea id="caption-text" readonly aria-label="Assembled caption"></textarea>
+      <div class="dock-actions">
+        <button type="button" id="copy-btn">Copy caption</button>
+        <span id="copy-status" role="status"></span>
+        <span id="token-count"></span>
+      </div>
+      <p id="why" class="why">Pick a series, or start from a template. Empty slots are left out of the caption.</p>
+      <details open>
+        <summary>What each slot is doing</summary>
+        <table class="slots" id="slot-table"></table>
+      </details>
+    </aside>
+  </div>
+  <p class="wrap foot" id="foot">Names come from the training catalog. Nothing is uploaded.</p>
+  <script src="assets/tags.js"></script>
+  <script src="assets/caption.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>

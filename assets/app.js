@@ -1,0 +1,1167 @@
+(function () {
+  const { norm, decadeOf, cleanParts, resolveCaption } = window.RetroCaption;
+  const TAGS = window.RetroTags;
+  const $ = (id) => document.getElementById(id);
+
+  const JUMP = {
+    prefix: "sec-prefix",
+    year: "sec-year",
+    decade: "sec-year",
+    character: "sec-cast",
+    series: "sec-series",
+    description: "sec-body",
+    source: "sec-source",
+    designer: "sec-designer",
+    quality: "sec-quality",
+  };
+
+  const state = {
+    prefix: true,
+    seriesId: null,
+    yearMode: "auto",
+    yearManual: "",
+    includeDecade: true,
+    characters: [],
+    designerMode: "auto",
+    designerManual: null,
+    bodyMode: "tags",
+    sentence: "",
+    counts: [],
+    tags: {},
+    extra: "",
+    sourceMode: "auto",
+    quality: [],
+    why: "Pick a series, or start from a template. Empty slots are left out of the caption.",
+    template: "",
+  };
+  TAGS.groups.forEach((group) => {
+    state.tags[group.id] = [];
+  });
+
+  let catalog = [];
+  let byId = new Map();
+  let designers = [];
+  let characters = [];
+  let promptUses = new Map();
+
+  function el(tag, props, kids) {
+    const node = document.createElement(tag);
+    Object.entries(props || {}).forEach(([key, value]) => {
+      if (value == null) return;
+      if (key === "class") node.className = value;
+      else if (key === "text") node.textContent = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2).toLowerCase(), value);
+      else node.setAttribute(key, String(value));
+    });
+    (kids || []).forEach((kid) => {
+      if (kid == null) return;
+      node.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+    });
+    return node;
+  }
+
+  function currentSeries() {
+    return state.seriesId ? byId.get(state.seriesId) || null : null;
+  }
+
+  function seriesSource(series) {
+    if (!series) return "";
+    return series.hires ? "hires" : "lowres";
+  }
+
+  function resolveYear() {
+    if (state.yearMode === "none") return "";
+    if (state.yearMode === "manual") return /^\d{4}$/.test(state.yearManual) ? state.yearManual : "";
+    const series = currentSeries();
+    return series && series.year ? String(series.year) : "";
+  }
+
+  function resolveDecade(year) {
+    if (!state.includeDecade || !/^\d{4}$/.test(String(year || ""))) return "";
+    return decadeOf(year);
+  }
+
+  function resolveSource() {
+    if (state.sourceMode === "none") return "";
+    if (state.sourceMode === "hires" || state.sourceMode === "lowres") return state.sourceMode;
+    return seriesSource(currentSeries());
+  }
+
+  function resolveDesigner() {
+    if (state.designerMode === "none") return null;
+    if (state.designerMode === "manual") return state.designerManual;
+    const series = currentSeries();
+    if (!series || !series.designer) return null;
+    return {
+      name: series.designer.name,
+      prompt: series.designer.prompt,
+      role: series.designer.role || "",
+      auto: true,
+    };
+  }
+
+  function orderedDescription() {
+    if (state.bodyMode === "sentence") {
+      return state.sentence.replace(/\s+/g, " ").trim();
+    }
+    const ordered = [];
+    const add = (id) => {
+      const value = String(id || "").trim();
+      if (value && !ordered.includes(value)) ordered.push(value);
+    };
+    TAGS.counts.forEach((tag) => {
+      if (state.counts.includes(tag.id)) add(tag.id);
+    });
+    TAGS.groups.forEach((group) => {
+      const picked = state.tags[group.id] || [];
+      group.tags.forEach((tag) => {
+        if (picked.includes(tag.id)) add(tag.id);
+      });
+    });
+    cleanParts(state.extra).forEach((part) => add(norm(part)));
+    return ordered.join(", ");
+  }
+
+  function orderedQuality() {
+    return TAGS.quality.map((tag) => tag.id).filter((id) => state.quality.includes(id));
+  }
+
+  function resolved() {
+    const series = currentSeries();
+    const year = resolveYear();
+    const designer = resolveDesigner();
+    return {
+      series,
+      year,
+      decade: resolveDecade(year),
+      source: resolveSource(),
+      designer,
+      description: orderedDescription(),
+      quality: orderedQuality(),
+    };
+  }
+
+  function captionModel(view) {
+    return {
+      prefix: state.prefix,
+      year: view.year,
+      decade: view.decade,
+      characters: state.characters.map((person) => person.prompt),
+      series: view.series ? view.series.prompt : "",
+      bodyMode: state.bodyMode,
+      description: view.description,
+      source: view.source,
+      designer: view.designer ? view.designer.prompt : "",
+      quality: view.quality,
+    };
+  }
+
+  function setWhy(text) {
+    state.why = text;
+    $("why").textContent = text;
+  }
+
+  function rank(query, fields) {
+    const q = query.toLowerCase();
+    if (!q) return 1;
+    let best = 0;
+    fields.forEach((field) => {
+      const value = String(field || "").toLowerCase();
+      if (!value) return;
+      if (value === q) best = Math.max(best, 5);
+      else if (value.startsWith(q)) best = Math.max(best, 4);
+      else if (value.split(/\s+/).some((word) => word.startsWith(q))) best = Math.max(best, 3);
+      else if (value.includes(q)) best = Math.max(best, 2);
+    });
+    return best;
+  }
+
+  function attachCombo(input, menu, config) {
+    let items = [];
+    let active = 0;
+
+    function close() {
+      menu.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+    }
+
+    function paint() {
+      items = config.items(input.value.trim());
+      menu.replaceChildren();
+      if (!items.length) {
+        menu.append(el("li", { class: "combo-empty" }, [config.empty || "No matches"]));
+        active = 0;
+      } else {
+        active = Math.max(0, Math.min(active, items.length - 1));
+        items.forEach((item, index) => {
+          const row = el("li", {
+            role: "option",
+            class: index === active ? "active" : "",
+            "aria-selected": index === active ? "true" : "false",
+          });
+          config.render(row, item);
+          row.addEventListener("mousedown", (event) => {
+            event.preventDefault();
+            config.pick(item);
+            input.value = "";
+            close();
+          });
+          menu.append(row);
+        });
+      }
+      menu.hidden = false;
+      input.setAttribute("aria-expanded", "true");
+      const current = menu.querySelector(".active");
+      if (current) current.scrollIntoView({ block: "nearest" });
+    }
+
+    input.addEventListener("focus", () => {
+      active = 0;
+      paint();
+    });
+    input.addEventListener("input", () => {
+      active = 0;
+      paint();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        if (menu.hidden) paint();
+        active = Math.min(active + 1, Math.max(items.length - 1, 0));
+        paint();
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        active = Math.max(active - 1, 0);
+        paint();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        if (items[active]) {
+          config.pick(items[active]);
+          input.value = "";
+          close();
+        } else if (config.pickRaw) {
+          config.pickRaw(input.value);
+          input.value = "";
+          close();
+        }
+      } else if (event.key === "Escape") {
+        close();
+      }
+    });
+    document.addEventListener("mousedown", (event) => {
+      if (!input.parentElement.contains(event.target)) close();
+    });
+    return { close };
+  }
+
+  function searchSeries(query) {
+    return catalog
+      .map((series) => ({
+        series,
+        score: rank(query, [
+          series.display,
+          series.prompt,
+          series.native,
+          series.year,
+          ...(series.aliases || []),
+          ...(series.studios || []),
+          series.designer && series.designer.name,
+        ]),
+      }))
+      .filter((row) => row.score > 0)
+      .sort((a, b) => b.score - a.score || a.series.display.localeCompare(b.series.display))
+      .slice(0, 40)
+      .map((row) => row.series);
+  }
+
+  function searchCast(query) {
+    const pool = $("cast-all").checked || !state.seriesId
+      ? characters
+      : characters.filter((person) => person.seriesId === state.seriesId);
+    return pool
+      .map((person) => ({
+        person,
+        score: rank(query, [person.name, person.prompt, person.native, ...(person.alt || []), person.seriesTitle]),
+      }))
+      .filter((row) => row.score > 0)
+      .sort((a, b) => b.score - a.score || a.person.name.localeCompare(b.person.name))
+      .slice(0, 40)
+      .map((row) => row.person);
+  }
+
+  function searchDesigners(query) {
+    return designers
+      .map((person) => ({
+        person,
+        score: rank(query, [person.name, person.prompt, ...person.credits.map((credit) => credit.title)]),
+      }))
+      .filter((row) => row.score > 0)
+      .sort((a, b) => b.score - a.score || a.person.name.localeCompare(b.person.name))
+      .slice(0, 40)
+      .map((row) => row.person);
+  }
+
+  function renderOption(row, title, sub) {
+    row.append(el("div", { class: "opt-title", text: title }), el("div", { class: "opt-sub", text: sub }));
+  }
+
+  function selectSeries(id) {
+    state.seriesId = id;
+    state.template = "";
+  }
+
+  function addCharacter(person) {
+    const key = person.seriesId + ":" + person.prompt;
+    if (state.characters.some((item) => item.seriesId + ":" + item.prompt === key)) return;
+    state.characters.push({
+      seriesId: person.seriesId,
+      name: person.name,
+      prompt: person.prompt,
+      gender: person.gender || "",
+      role: person.role || "",
+      seriesTitle: person.seriesTitle,
+    });
+  }
+
+  function findCharacter(seriesId, prompt) {
+    return characters.find((person) => person.seriesId === seriesId && person.prompt === prompt);
+  }
+
+  function resetState() {
+    state.prefix = true;
+    state.seriesId = null;
+    state.yearMode = "auto";
+    state.yearManual = "";
+    state.includeDecade = true;
+    state.characters = [];
+    state.designerMode = "auto";
+    state.designerManual = null;
+    state.bodyMode = "tags";
+    state.sentence = "";
+    state.counts = [];
+    TAGS.groups.forEach((group) => {
+      state.tags[group.id] = [];
+    });
+    state.extra = "";
+    state.sourceMode = "auto";
+    state.quality = [];
+    state.template = "";
+  }
+
+  function qualityConflict(tag, source) {
+    if (source === "hires" && tag.tier === "lo") return "Left out of hires captions in the training pack.";
+    if (source === "lowres" && tag.tier === "hi") return "Used on hires captions, not lowres ones.";
+    return "";
+  }
+
+  function renderCaption(view) {
+    const built = resolveCaption(captionModel(view));
+    $("caption-text").value = built.text;
+    const count = built.slots.length;
+    $("token-count").textContent = count === 1 ? "1 token" : count + " tokens";
+    const chips = $("caption-chips");
+    chips.replaceChildren();
+    if (!built.slots.length) {
+      chips.append(el("span", { class: "meta", text: "Nothing in the caption yet." }));
+    }
+    built.slots.forEach((slot) => {
+      chips.append(el("button", {
+        type: "button",
+        class: "k-" + slot.kind,
+        text: slot.text,
+        onclick: () => {
+          const target = $(JUMP[slot.kind]);
+          if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+        },
+      }));
+    });
+    const rows = [
+      ["Prefix", state.prefix ? "anime screenshot" : ""],
+      ["Year", view.year],
+      ["Decade", view.decade],
+      ["Characters", state.characters.map((person) => person.prompt).join(", ")],
+      ["Series", view.series ? view.series.prompt : ""],
+      ["Description", view.description],
+      ["Scan", view.source],
+      ["Designer", view.designer ? view.designer.prompt : ""],
+      ["Quality", view.quality.join(", ")],
+    ];
+    const table = $("slot-table");
+    table.replaceChildren();
+    rows.forEach(([label, value]) => {
+      const tr = el("tr");
+      tr.append(el("th", { text: label, scope: "row" }));
+      tr.append(el("td", { class: value ? "" : "empty", text: value || "left out" }));
+      table.append(tr);
+    });
+    $("why").textContent = state.why;
+  }
+
+  function renderSeriesCard(view) {
+    const host = $("series-card");
+    host.replaceChildren();
+    const series = view.series;
+    if (!series) {
+      host.append(el("p", { class: "meta", text: "No series. The caption skips the series name, and automatic year, scan, and designer stay empty." }));
+      return;
+    }
+    const shared = promptUses.get(series.prompt) || [];
+    const card = el("div", { class: "choice" });
+    card.append(el("span", { class: "badge", text: "In the caption" }));
+    card.append(el("h3", { text: series.display }));
+    card.append(el("p", { class: "meta" }, [
+      "Caption token ",
+      el("span", { class: "token", text: series.prompt }),
+    ]));
+    const bits = [
+      series.year || "year unknown",
+      series.decade,
+      series.format ? series.format.toLowerCase().replace(/_/g, " ") : "",
+      series.height ? series.height + "p" : "scan height not recorded",
+      series.hires ? "packed as hires" : "packed as lowres",
+    ].filter(Boolean);
+    card.append(el("p", { class: "meta", text: bits.join(" · ") }));
+    if (series.studios && series.studios.length) {
+      card.append(el("p", { class: "meta", text: "Studio, not written in the caption: " + series.studios.join(", ") }));
+    }
+    if (series.native) card.append(el("p", { class: "meta", text: series.native }));
+    if (series.display.includes(":") && norm(series.display.split(":")[0]) === series.prompt) {
+      card.append(el("p", { class: "warn", text: "Training captions kept only the title before the colon. The token is “" + series.prompt + "”." }));
+    }
+    if (shared.length > 1) {
+      const others = shared.filter((item) => item.id !== series.id).map((item) => item.display + (item.year ? " (" + item.year + ")" : ""));
+      card.append(el("p", { class: "warn", text: "This token is shared with " + others.join(", ") + ". The year and the cast are what separate them." }));
+    }
+    const held = [];
+    if (state.yearMode !== "auto") held.push("year");
+    if (state.designerMode !== "auto") held.push("designer");
+    if (state.sourceMode !== "auto") held.push("scan size");
+    if (held.length) {
+      card.append(el("p", { class: "meta", text: "This series did not replace your " + held.join(", ") + ". Use the reset control on that slot if you want it to." }));
+    }
+    card.append(el("div", { class: "row" }, [
+      el("button", {
+        type: "button",
+        class: "btn ghost",
+        text: "Remove series",
+        onclick: () => {
+          state.seriesId = null;
+          state.template = "";
+          setWhy("Series removed. Automatic year, scan, and designer drop out with it unless you set them by hand.");
+          render();
+        },
+      }),
+    ]));
+    host.append(card);
+  }
+
+  function renderYear(view) {
+    const input = $("year-input");
+    if (document.activeElement !== input) {
+      input.value = state.yearMode === "manual" ? state.yearManual : view.year;
+    }
+    const badge = $("year-badge");
+    const series = currentSeries();
+    if (state.yearMode === "manual") {
+      badge.className = "badge manual";
+      badge.textContent = "Manual";
+    } else if (state.yearMode === "none") {
+      badge.className = "badge none";
+      badge.textContent = "Omitted";
+    } else if (!series) {
+      badge.className = "badge none";
+      badge.textContent = "No series yet";
+    } else {
+      badge.className = "badge";
+      badge.textContent = "From series";
+    }
+    $("decade-toggle").checked = state.includeDecade;
+    $("decade-toggle").disabled = !view.year && state.yearMode !== "manual";
+    const help = [];
+    if (state.yearMode === "manual" && state.yearManual && !/^\d{4}$/.test(state.yearManual)) {
+      help.push("Enter a four-digit year.");
+    }
+    if (view.year && (Number(view.year) < 1977 || Number(view.year) > 1989)) {
+      help.push(view.year + " is outside the 1977–1989 training window.");
+    }
+    if (view.decade) help.push("Decade token: " + view.decade + ".");
+    else if (!state.includeDecade && view.year) help.push("Decade omitted.");
+    $("year-help").textContent = help.join(" ");
+  }
+
+  function renderCast() {
+    const host = $("cast-chips");
+    host.replaceChildren();
+    if (!state.characters.length) {
+      host.append(el("p", { class: "meta", text: "No character. The cast slot is left out." }));
+    }
+    state.characters.forEach((person, index) => {
+      const other = state.seriesId && person.seriesId !== state.seriesId;
+      const chip = el("span", { class: "chip" });
+      chip.append(person.name + (other ? " · " + person.seriesTitle : ""));
+      chip.append(el("button", {
+        type: "button",
+        "aria-label": "Remove " + person.name,
+        text: "×",
+        onclick: () => {
+          state.characters.splice(index, 1);
+          render();
+        },
+      }));
+      host.append(chip);
+    });
+    const suggest = $("cast-suggest");
+    suggest.replaceChildren();
+    if (!state.characters.length || state.counts.length) return;
+    const genders = state.characters.map((person) => (person.gender || "").toLowerCase());
+    if (genders.some((gender) => gender !== "female" && gender !== "male")) {
+      suggest.textContent = "Some of these names have no gender in the catalog, so a count tag is not suggested.";
+      return;
+    }
+    const women = genders.filter((gender) => gender === "female").length;
+    const men = genders.filter((gender) => gender === "male").length;
+    let tags = null;
+    if (women && !men) tags = [women === 1 ? "1girl" : women === 2 ? "2girls" : women === 3 ? "3girls" : "multiple girls"];
+    else if (men && !women) tags = [men === 1 ? "1boy" : men === 2 ? "2boys" : men === 3 ? "3boys" : "multiple boys"];
+    else if (women && men) tags = ["1girl", "1boy"];
+    if (!tags) return;
+    suggest.append("Suggested count tag, not added yet: ");
+    suggest.append(el("button", {
+      type: "button",
+      class: "btn",
+      text: "Add " + tags.join(" and "),
+      onclick: () => {
+        tags.forEach((tag) => {
+          if (!state.counts.includes(tag)) state.counts.push(tag);
+        });
+        setWhy("Count tags sit at the start of the description. They are not character names.");
+        render();
+      },
+    }));
+  }
+
+  function renderDesigner(view) {
+    const series = view.series;
+    const picks = $("designer-picks");
+    picks.replaceChildren();
+    if (series && series.designers.length) {
+      series.designers.forEach((person) => {
+        const selected = view.designer && view.designer.prompt === person.prompt;
+        const training = series.designer && series.designer.prompt === person.prompt;
+        picks.append(el("button", {
+          type: "button",
+          "aria-pressed": selected ? "true" : "false",
+          text: person.name + (training ? " · training default" : person.role ? " · " + person.role : ""),
+          onclick: () => {
+            if (training) {
+              state.designerMode = "auto";
+              state.designerManual = null;
+              setWhy("Back to the designer written in this series' training captions.");
+            } else {
+              state.designerMode = "manual";
+              state.designerManual = { name: person.name, prompt: person.prompt, role: person.role || "" };
+              setWhy("Manual designer. The series stays. Reset returns the training default.");
+            }
+            render();
+          },
+        }));
+      });
+    }
+    const card = $("designer-card");
+    card.replaceChildren();
+    const box = el("div", { class: "choice" });
+    const designer = view.designer;
+    if (!designer) {
+      box.append(el("span", { class: "badge none", text: "Omitted" }));
+      box.append(el("h3", { text: "No character designer" }));
+      box.append(el("p", { class: "meta", text: "The caption skips this slot. Prompt following stays with the text encoder, which was not trained." }));
+    } else if (state.designerMode === "manual") {
+      box.append(el("span", { class: "badge manual", text: "Manual" }));
+      box.append(el("h3", { text: designer.name }));
+      box.append(el("p", { class: "meta" }, [
+        "Caption token ",
+        el("span", { class: "token", text: designer.prompt }),
+        designer.role ? " · " + designer.role : "",
+      ]));
+    } else {
+      box.append(el("span", { class: "badge", text: "From series" }));
+      box.append(el("h3", { text: designer.name }));
+      box.append(el("p", { class: "meta" }, [
+        "Caption token ",
+        el("span", { class: "token", text: designer.prompt }),
+        designer.role ? " · " + designer.role : "",
+      ]));
+    }
+    const actions = el("div", { class: "row" });
+    if (state.designerMode !== "auto") {
+      actions.append(el("button", {
+        type: "button",
+        class: "btn",
+        text: "Reset to the series designer",
+        disabled: series && series.designer ? null : "disabled",
+        onclick: () => {
+          state.designerMode = "auto";
+          state.designerManual = null;
+          setWhy("Designer follows the series again.");
+          render();
+        },
+      }));
+    }
+    if (state.designerMode !== "none") {
+      actions.append(el("button", {
+        type: "button",
+        class: "btn ghost",
+        text: "No designer",
+        onclick: () => {
+          state.designerMode = "none";
+          state.designerManual = null;
+          setWhy("Designer removed. The rest of the caption stays.");
+          render();
+        },
+      }));
+    }
+    box.append(actions);
+    card.append(box);
+  }
+
+  function renderSource(view) {
+    const effective = view.source;
+    $("source-hi").setAttribute("aria-pressed", effective === "hires" ? "true" : "false");
+    $("source-lo").setAttribute("aria-pressed", effective === "lowres" ? "true" : "false");
+    $("source-omit").setAttribute("aria-pressed", state.sourceMode === "none" ? "true" : "false");
+    const series = view.series;
+    const help = [];
+    if (state.sourceMode === "auto" && series) {
+      help.push("From this series: " + (series.hires ? "hires" : "lowres") + (series.height ? ", " + series.height + "p scan." : "."));
+    } else if (state.sourceMode === "auto") {
+      help.push("No series yet, so the scan token is left out until you choose one.");
+    } else if (state.sourceMode === "none") {
+      help.push("Scan token omitted.");
+    } else {
+      help.push("Manual " + state.sourceMode + ".");
+    }
+    $("source-help").textContent = help.join(" ");
+  }
+
+  function renderModes() {
+    const tags = state.bodyMode === "tags";
+    $("mode-tags").setAttribute("aria-pressed", tags ? "true" : "false");
+    $("mode-sentence").setAttribute("aria-pressed", tags ? "false" : "true");
+    $("sentence").hidden = tags;
+    $("sentence-help").hidden = tags;
+    $("extra").disabled = !tags;
+    if (document.activeElement !== $("sentence")) $("sentence").value = state.sentence;
+    if (document.activeElement !== $("extra")) $("extra").value = state.extra;
+    $("prefix-toggle").checked = state.prefix;
+    document.querySelectorAll("#template-row .template").forEach((button) => {
+      button.setAttribute("aria-pressed", button.dataset.id === state.template ? "true" : "false");
+    });
+  }
+
+  function renderTagPressed(view) {
+    document.querySelectorAll("#tag-board .tag").forEach((button) => {
+      const id = button.dataset.tag;
+      const group = button.dataset.group;
+      const on = group === "count" ? state.counts.includes(id) : (state.tags[group] || []).includes(id);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    document.querySelectorAll("#quality-board .tag").forEach((button) => {
+      const tag = TAGS.quality.find((item) => item.id === button.dataset.tag);
+      const on = state.quality.includes(tag.id);
+      button.setAttribute("aria-pressed", on ? "true" : "false");
+      const conflict = on ? qualityConflict(tag, view.source) : "";
+      button.classList.toggle("conflict", Boolean(conflict));
+      button.title = conflict ? tag.note + " " + conflict : tag.note;
+    });
+  }
+
+  function render() {
+    const view = resolved();
+    renderCaption(view);
+    renderSeriesCard(view);
+    renderYear(view);
+    renderCast();
+    renderDesigner(view);
+    renderSource(view);
+    renderModes();
+    renderTagPressed(view);
+  }
+
+  function toggleList(list, id) {
+    const index = list.indexOf(id);
+    if (index >= 0) list.splice(index, 1);
+    else list.push(id);
+  }
+
+  function insertIntoSentence(text) {
+    const box = $("sentence");
+    const start = box.selectionStart == null ? box.value.length : box.selectionStart;
+    const end = box.selectionEnd == null ? start : box.selectionEnd;
+    const before = box.value.slice(0, start);
+    const after = box.value.slice(end);
+    const pad = before && !/\s$/.test(before) ? " " : "";
+    const next = before + pad + text + after;
+    state.sentence = next;
+    box.value = next;
+    const caret = (before + pad + text).length;
+    box.focus();
+    box.setSelectionRange(caret, caret);
+  }
+
+  function buildTagBoard() {
+    const board = $("tag-board");
+    const countGroup = el("section", { class: "tag-group", "data-group": "count" });
+    countGroup.append(el("h3", { text: "Count" }), el("p", { text: "Goes at the front of a tag description. Leave it empty if you do not want a count." }));
+    const countWrap = el("div", { class: "tags" });
+    TAGS.counts.forEach((tag) => {
+      countWrap.append(el("button", {
+        type: "button",
+        class: "tag",
+        "data-group": "count",
+        "data-tag": tag.id,
+        text: tag.id,
+        title: tag.note,
+        onclick: () => {
+          if (state.bodyMode === "sentence") {
+            insertIntoSentence(tag.id);
+            setWhy(tag.note);
+            render();
+            return;
+          }
+          toggleList(state.counts, tag.id);
+          setWhy(tag.note);
+          render();
+        },
+      }));
+    });
+    countGroup.append(countWrap);
+    board.append(countGroup);
+
+    TAGS.groups.forEach((group) => {
+      const section = el("section", { class: "tag-group", "data-group": group.id });
+      section.append(el("h3", { text: group.title }), el("p", { text: group.note }));
+      const wrap = el("div", { class: "tags" });
+      group.tags.forEach((tag) => {
+        wrap.append(el("button", {
+          type: "button",
+          class: "tag",
+          "data-group": group.id,
+          "data-tag": tag.id,
+          text: tag.id,
+          title: tag.note,
+          onclick: () => {
+            if (state.bodyMode === "sentence") {
+              insertIntoSentence(tag.id);
+              setWhy(tag.note);
+              render();
+              return;
+            }
+            toggleList(state.tags[group.id], tag.id);
+            setWhy(tag.note);
+            render();
+          },
+        }));
+      });
+      section.append(wrap);
+      board.append(section);
+    });
+
+    const quality = $("quality-board");
+    const painted = TAGS.quality.filter((tag) => tag.tier !== "lo");
+    const tape = TAGS.quality.filter((tag) => tag.tier === "lo");
+    [
+      ["Painted cel and print", "Kept on hires captions. Grain, dust, and fade were also used on lowres stills.", painted],
+      ["Broadcast and tape", "Kept on lowres captions. The pack stripped these from hires stills.", tape],
+    ].forEach(([title, note, list]) => {
+      const section = el("section");
+      section.append(el("h3", { text: title }), el("p", { class: "meta", text: note }));
+      const wrap = el("div", { class: "tags" });
+      list.forEach((tag) => {
+        wrap.append(el("button", {
+          type: "button",
+          class: "tag",
+          "data-tag": tag.id,
+          text: tag.id,
+          title: tag.note,
+          onclick: () => {
+            toggleList(state.quality, tag.id);
+            const view = resolved();
+            const conflict = qualityConflict(tag, view.source);
+            setWhy(conflict ? tag.note + " " + conflict : tag.note);
+            render();
+          },
+        }));
+      });
+      section.append(wrap);
+      quality.append(section);
+    });
+  }
+
+  function applyFilter() {
+    const query = $("tag-filter").value.trim().toLowerCase();
+    document.querySelectorAll("#tag-board .tag-group").forEach((group) => {
+      let shown = 0;
+      group.querySelectorAll(".tag").forEach((button) => {
+        const match = !query || button.dataset.tag.includes(query);
+        button.hidden = !match;
+        if (match) shown += 1;
+      });
+      group.hidden = shown === 0;
+    });
+  }
+
+  function chooseSource(value) {
+    const series = currentSeries();
+    const packed = seriesSource(series);
+    if (value === "none") state.sourceMode = "none";
+    else if (packed && packed === value) state.sourceMode = "auto";
+    else state.sourceMode = value;
+    setWhy(value === "hires"
+      ? "hires marks a 720p-or-taller scan. It is written after the description."
+      : value === "lowres"
+        ? "lowres marks a smaller television or tape scan."
+        : "Scan size removed from the caption.");
+    render();
+  }
+
+  const TEMPLATES = [
+    {
+      id: "empty",
+      name: "Empty caption",
+      blurb: "Prefix only. Add only the slots you want.",
+      apply() {
+        resetState();
+        setWhy("Only the prefix is in the caption. Turn it off in the prefix section if you want the box completely clear.");
+      },
+    },
+    {
+      id: "anne",
+      name: "Named heroine",
+      blurb: "Anne, 1979, hires cel. Edit the description.",
+      apply() {
+        resetState();
+        selectSeries("akage-no-anne");
+        const anne = findCharacter("akage-no-anne", "anne shirley");
+        if (anne) addCharacter(anne);
+        state.counts = ["1girl"];
+        state.tags.hair = ["long hair", "red hair"];
+        state.tags.clothing = ["dress"];
+        state.tags.place = ["outdoors"];
+        state.quality = ["hq cel animation"];
+        state.template = "anne";
+        setWhy("A named character is written before the series. hq cel animation is the default hires quality tag.");
+      },
+    },
+    {
+      id: "cats",
+      name: "Television frame",
+      blurb: "Cat's Eye, three sisters, lowres tape.",
+      apply() {
+        resetState();
+        selectSeries("cats-eye-s2");
+        ["hitomi kisugi", "ai kisugi", "rui kisugi"].forEach((prompt) => {
+          const person = findCharacter("cats-eye-s2", prompt);
+          if (person) addCharacter(person);
+        });
+        state.counts = ["3girls"];
+        state.quality = ["film grain", "soft focus"];
+        state.template = "cats";
+        setWhy("This series was packed as lowres. Grain and soft focus describe the scan. They do not replace the decade.");
+      },
+    },
+    {
+      id: "castle",
+      name: "Film still, no name",
+      blurb: "Castle in the Sky. Place and shot, no cast.",
+      apply() {
+        resetState();
+        selectSeries("castle-in-the-sky");
+        state.tags.shot = ["wide shot"];
+        state.tags.place = ["outdoors", "sky"];
+        state.quality = ["hq cel animation", "clean lineart"];
+        state.template = "castle";
+        setWhy("No character is a normal training caption. The designer still comes from the series until you clear it.");
+      },
+    },
+    {
+      id: "mecha",
+      name: "Mecha, no people",
+      blurb: "Char's Counterattack. Cockpit, no cast.",
+      apply() {
+        resetState();
+        selectSeries("gundam-cca");
+        state.counts = ["no humans"];
+        state.tags.place = ["mecha", "cockpit", "night"];
+        state.quality = ["hq cel animation"];
+        state.template = "mecha";
+        setWhy("no humans keeps a robot frame from growing a person. The series token is the title before the colon.");
+      },
+    },
+    {
+      id: "sentence",
+      name: "One sentence",
+      blurb: "Vampire Hunter D, described in prose.",
+      apply() {
+        resetState();
+        selectSeries("vampire-hunter-d");
+        const hunter = findCharacter("vampire-hunter-d", "d");
+        if (hunter) addCharacter(hunter);
+        state.bodyMode = "sentence";
+        state.sentence = "a pale hunter in a wide dark hat and black cape, shown from the chest up against a night sky";
+        state.quality = ["hq cel animation"];
+        state.template = "sentence";
+        setWhy("Sentence captions replace the tag list. The name, series, scan, and designer stay in their own slots.");
+      },
+    },
+  ];
+
+  function renderTemplates() {
+    const host = $("template-row");
+    TEMPLATES.forEach((template) => {
+      host.append(el("button", {
+        type: "button",
+        class: "template",
+        "data-id": template.id,
+        "aria-pressed": "false",
+        onclick: () => {
+          template.apply();
+          if (template.id !== "empty") state.template = template.id;
+          render();
+        },
+      }, [el("b", { text: template.name }), el("span", { text: template.blurb })]));
+    });
+  }
+
+  function wire() {
+    renderTemplates();
+    buildTagBoard();
+
+    attachCombo($("series-input"), $("series-menu"), {
+      empty: "No series matches that.",
+      items: searchSeries,
+      render(row, series) {
+        const shared = (promptUses.get(series.prompt) || []).length > 1;
+        renderOption(
+          row,
+          series.display,
+          [series.year, series.hires ? "hires" : "lowres", series.designer && series.designer.name, shared ? "token " + series.prompt : ""]
+            .filter(Boolean)
+            .join(" · ")
+        );
+      },
+      pick(series) {
+        selectSeries(series.id);
+        const held = [];
+        if (state.yearMode !== "auto") held.push("the year");
+        if (state.designerMode !== "auto") held.push("the designer");
+        if (state.sourceMode !== "auto") held.push("the scan size");
+        setWhy(held.length
+          ? series.display + " is selected. It did not replace " + held.join(", ") + ", because those are set by hand."
+          : series.display + " filled the year, decade, scan size, and character designer. Change any of them below.");
+        render();
+      },
+    });
+
+    attachCombo($("cast-input"), $("cast-menu"), {
+      empty: "No character matches that.",
+      items: searchCast,
+      render(row, person) {
+        renderOption(
+          row,
+          person.name,
+          [person.role && person.role.toLowerCase(), person.gender, person.seriesTitle, person.year].filter(Boolean).join(" · ")
+        );
+      },
+      pick(person) {
+        addCharacter(person);
+        setWhy(person.name + " is written as “" + person.prompt + "”, before the series name.");
+        render();
+      },
+    });
+
+    attachCombo($("designer-input"), $("designer-menu"), {
+      empty: "No designer matches. Press Enter to use what you typed.",
+      items: searchDesigners,
+      render(row, person) {
+        const sample = person.credits.slice(0, 2).map((credit) => credit.title).join(", ");
+        renderOption(row, person.name, sample || person.prompt);
+      },
+      pick(person) {
+        const credit = person.credits[0];
+        state.designerMode = "manual";
+        state.designerManual = { name: person.name, prompt: person.prompt, role: credit ? credit.role : "" };
+        setWhy("Manual designer “" + person.prompt + "”. Reset puts the series designer back.");
+        render();
+      },
+      pickRaw(text) {
+        const name = text.trim();
+        if (!name) return;
+        state.designerMode = "manual";
+        state.designerManual = { name, prompt: norm(name), role: "" };
+        setWhy("Custom designer. The caption uses the lowercased name.");
+        render();
+      },
+    });
+
+    $("prefix-toggle").addEventListener("change", () => {
+      state.prefix = $("prefix-toggle").checked;
+      setWhy(state.prefix
+        ? "anime screenshot is the first token of every training caption."
+        : "Prefix removed. The model always saw this word first during training.");
+      render();
+    });
+
+    $("year-input").addEventListener("input", () => {
+      const raw = $("year-input").value.replace(/\D/g, "").slice(0, 4);
+      if ($("year-input").value !== raw) $("year-input").value = raw;
+      if (!raw) {
+        state.yearMode = "none";
+        state.yearManual = "";
+      } else {
+        state.yearMode = "manual";
+        state.yearManual = raw;
+      }
+      setWhy("Manual year. Reset returns the series year. The decade follows a four-digit year.");
+      render();
+    });
+    $("year-reset").addEventListener("click", () => {
+      state.yearMode = "auto";
+      state.yearManual = "";
+      setWhy("Year follows the series again.");
+      render();
+    });
+    $("year-omit").addEventListener("click", () => {
+      state.yearMode = "none";
+      state.yearManual = "";
+      setWhy("Year and decade are both left out.");
+      render();
+    });
+    $("decade-toggle").addEventListener("change", () => {
+      state.includeDecade = $("decade-toggle").checked;
+      setWhy(state.includeDecade ? "The decade tag is written after the year." : "Decade removed. The year can stay on its own.");
+      render();
+    });
+
+    $("cast-all").addEventListener("change", () => {
+      setWhy($("cast-all").checked
+        ? "Character search now covers every series."
+        : "Character search is limited to the selected series.");
+    });
+    $("cast-clear").addEventListener("click", () => {
+      state.characters = [];
+      setWhy("Cast cleared. Count tags, if you added any, are still in the description.");
+      render();
+    });
+
+    $("mode-tags").addEventListener("click", () => {
+      state.bodyMode = "tags";
+      setWhy("Tag mode. The description is the tags you toggle, in a fixed order.");
+      render();
+    });
+    $("mode-sentence").addEventListener("click", () => {
+      state.bodyMode = "sentence";
+      setWhy("Sentence mode. The tag buttons insert words. They are not added as their own caption.");
+      render();
+    });
+    $("sentence").addEventListener("input", () => {
+      state.sentence = $("sentence").value;
+      state.bodyMode = "sentence";
+      render();
+    });
+    $("extra").addEventListener("input", () => {
+      state.extra = $("extra").value;
+      setWhy("Extra words are lowercased and placed at the end of the description, before the scan size.");
+      render();
+    });
+    $("tag-filter").addEventListener("input", applyFilter);
+
+    $("source-hi").addEventListener("click", () => chooseSource("hires"));
+    $("source-lo").addEventListener("click", () => chooseSource("lowres"));
+    $("source-omit").addEventListener("click", () => chooseSource("none"));
+    $("source-reset").addEventListener("click", () => {
+      state.sourceMode = "auto";
+      setWhy("Scan size follows the series again.");
+      render();
+    });
+
+    $("copy-btn").addEventListener("click", async () => {
+      const text = $("caption-text").value;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (error) {
+        $("caption-text").focus();
+        $("caption-text").select();
+        document.execCommand("copy");
+      }
+      $("copy-status").textContent = "Copied";
+      window.setTimeout(() => {
+        if ($("copy-status").textContent === "Copied") $("copy-status").textContent = "";
+      }, 1600);
+    });
+  }
+
+  function indexCatalog(data) {
+    catalog = data.series || [];
+    byId = new Map(catalog.map((series) => [series.id, series]));
+    promptUses = new Map();
+    characters = [];
+    const designerMap = new Map();
+    catalog.forEach((series) => {
+      const list = promptUses.get(series.prompt) || [];
+      list.push(series);
+      promptUses.set(series.prompt, list);
+      (series.characters || []).forEach((person) => {
+        characters.push({
+          ...person,
+          seriesId: series.id,
+          seriesTitle: series.display,
+          year: series.year,
+        });
+      });
+      (series.designers || []).forEach((person) => {
+        let row = designerMap.get(person.prompt);
+        if (!row) {
+          row = { name: person.name, prompt: person.prompt, credits: [] };
+          designerMap.set(person.prompt, row);
+        }
+        row.credits.push({
+          seriesId: series.id,
+          title: series.display,
+          role: person.role || "",
+          year: series.year,
+        });
+      });
+    });
+    designers = [...designerMap.values()].sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async function main() {
+    if (window.matchMedia("(max-width: 980px)").matches) {
+      const details = document.querySelector("#dock details");
+      if (details) details.open = false;
+    }
+    wire();
+    try {
+      const response = await fetch("assets/data.json");
+      if (!response.ok) throw new Error("Catalog request failed");
+      const data = await response.json();
+      indexCatalog(data);
+      const castCount = characters.length;
+      $("foot").textContent = catalog.length + " series and " + castCount + " characters from the training catalog. The page runs entirely in the browser. Nothing is uploaded.";
+      const requested = new URLSearchParams(location.search).get("template");
+      const starter = TEMPLATES.find((item) => item.id === requested);
+      if (starter) {
+        starter.apply();
+        if (requested !== "empty") state.template = requested;
+      }
+      render();
+    } catch (error) {
+      $("template-row").before(el("p", {
+        class: "error",
+        text: "The series catalog did not load. Open this page through a local server or GitHub Pages, not as a loose file.",
+      }));
+    }
+  }
+
+  main();
+})();
